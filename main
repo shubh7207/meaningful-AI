@@ -1,0 +1,263 @@
+import customtkinter as ctk
+import requests
+import json
+import pyttsx3
+import random
+import threading
+import datetime
+import os
+import time
+
+# =====================================================================
+# 1. VISUAL THEME CONFIGURATION
+# =====================================================================
+ctk.set_appearance_mode("dark") 
+BG_COLOR = "#1A1C23"
+AI_BUBBLE_COLOR = "#2D313F"
+USER_BUBBLE_COLOR = "#2E4A62"
+TEXT_COLOR = "#E2E8F0"
+
+# =====================================================================
+# 2. CORE CONFIGURATION
+# =====================================================================
+# Text-to-Speech
+engine = pyttsx3.init()
+voices = engine.getProperty('voices')
+MALE_VOICE_ID = voices[0].id
+FEMALE_VOICE_ID = voices[1].id if len(voices) > 1 else voices[0].id
+SELECTED_VOICE = FEMALE_VOICE_ID
+
+# Ollama API
+OLLAMA_URL = "http://localhost:11434/api/chat"
+MODEL_NAME = "llama3"
+
+# Crisis Keywords
+CRISIS_KEYWORDS = ["hurt myself", "suicide", "end it all", "give up on life", "self-harm", "kill myself"]
+
+# System Prompt
+SYSTEM_PROMPT = (
+    "You are a deeply compassionate, human-like AI companion. Your core trait is emotional intelligence. "
+    "Carefully analyze the emotional weight and severity of the user's message, then choose one of two paths:\n\n"
+    
+    "PATH A: Day-to-Day / Emotional Troubles (e.g., loneliness, a bad day, minor anxiety, feeling down)\n"
+    "- Act like a close, warm human friend.\n"
+    "- Use deep empathy, sympathy, and compassion to validate their feelings entirely.\n"
+    "- Lift their spirits! Use comforting, kind, and cheering words to reassure them that they are doing okay.\n\n"
+    
+    "PATH B: Serious / Long-term Problems (e.g., deep trauma, feeling permanently stuck, major life transitions)\n"
+    "- Do NOT try to quickly 'cheer them up' with superficial phrases.\n"
+    "- First, acknowledge their pain with calm, grounded empathy so they feel deeply heard.\n"
+    "- Then, transition into a structured helper. Offer practical, logical examples and clear, step-by-step solutions.\n"
+    "- Use sound reason, break the problem down into manageable pieces, and guide them on how to move forward logically.\n\n"
+    
+    "Crucial Guidelines: Speak conversationally, avoid rigid bulleted lists unless breaking down solutions in Path B, "
+    "and always maintain an authentic, warm, non-robotic tone."
+)
+
+# Greetings
+GREETINGS = [
+    "Hey there. I'm really glad you reached out today. Whenever you're ready, tell me what's on your mind—I'm completely here to listen.",
+    "Hi. Take a deep breath. This is a completely safe, private space for you. How are you feeling today?",
+    "Hello. I'm here for you, no matter what you're walking through right now. What's been going on in your world lately?",
+    "Hey. I know life can get incredibly overwhelming sometimes. If you want to vent or just talk through things, I'm all ears."
+]
+
+# Chat History
+chat_history = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+# Memory File
+MEMORY_FILE = "companion_memory.json"
+
+def load_local_memory():
+    if os.path.exists(MEMORY_FILE):
+        try:
+            with open(MEMORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            pass
+    return {"user_name": "my friend", "last_struggle_summary": ""}
+
+user_memory = load_local_memory()
+
+# =====================================================================
+# 3. GUI APPLICATION CLASS
+# =====================================================================
+class SoothingChatApp(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        
+        self.title("Your Safe Space")
+        self.geometry("550x650")
+        self.configure(fg_color=BG_COLOR)
+        
+        self.grid_rowconfigure(1, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+        
+        self.show_onboarding()
+
+    def show_onboarding(self):
+        self.onboarding_frame = ctk.CTkFrame(self, fg_color=BG_COLOR)
+        self.onboarding_frame.grid(row=1, column=0, sticky="nsew", padx=20, py=20)
+        
+        label = ctk.CTkLabel(
+            self.onboarding_frame, 
+            text="Welcome to your quiet space.\nTo personalize your environment, are you a:",
+            font=("Segoe UI", 16), text_color=TEXT_COLOR
+        )
+        label.pack(pady=50)
+        
+        btn_boy = ctk.CTkButton(
+            self.onboarding_frame, text="Boy", fg_color=USER_BUBBLE_COLOR, 
+            hover_color="#1F3345", font=("Segoe UI", 14), command=lambda: self.start_chat("1")
+        )
+        btn_boy.pack(pady=12, ipady=6)
+        
+        btn_girl = ctk.CTkButton(
+            self.onboarding_frame, text="Girl", fg_color="#6C5B7B", 
+            hover_color="#4B3F56", font=("Segoe UI", 14), command=lambda: self.start_chat("2")
+        )
+        btn_girl.pack(pady=12, ipady=6)
+
+    def start_chat(self, gender_choice):
+        global SELECTED_VOICE
+        SELECTED_VOICE = FEMALE_VOICE_ID if gender_choice == "1" else MALE_VOICE_ID
+        
+        self.onboarding_frame.destroy()
+        self.setup_chat_ui()
+        
+        initial_greeting = random.choice(GREETINGS)
+        chat_history.append({"role": "assistant", "content": initial_greeting})
+        self.append_message("AI", initial_greeting)
+        
+        threading.Thread(target=self.speak_text, args=(initial_greeting,), daemon=True).start()
+
+    def setup_chat_ui(self):
+        self.chat_display = ctk.CTkTextbox(
+            self, fg_color=BG_COLOR, text_color=TEXT_COLOR, 
+            font=("Segoe UI", 14), wrap="word", state="disabled"
+        )
+        self.chat_display.grid(row=1, column=0, sticky="nsew", padx=25, py=15)
+        
+        input_frame = ctk.CTkFrame(self, fg_color=BG_COLOR)
+        input_frame.grid(row=2, column=0, sticky="ew", padx=25, py=25)
+        input_frame.grid_columnconfigure(0, weight=1)
+        
+        self.entry_box = ctk.CTkEntry(
+            input_frame, placeholder_text="Type whatever you're feeling here...", 
+            fg_color=AI_BUBBLE_COLOR, border_width=0, text_color=TEXT_COLOR,
+            font=("Segoe UI", 13)
+        )
+        self.entry_box.grid(row=0, column=0, sticky="ew", padx=(0, 12), ipady=8)
+        self.entry_box.bind("<Return>", lambda event: self.send_message())
+        
+        send_btn = ctk.CTkButton(
+            input_frame, text="Send", fg_color=USER_BUBBLE_COLOR, 
+            hover_color="#1F3345", width=85, font=("Segoe UI", 13, "bold"),
+            command=self.send_message
+        )
+        send_btn.grid(row=0, column=1, sticky="e")
+        
+        self.status_label = ctk.CTkLabel(
+            self, text="", font=("Segoe UI", 12, "italic"), 
+            text_color="#8A92A6"
+        )
+        self.status_label.grid(row=3, column=0, sticky="w", padx=30, pady=(0, 5))
+
+    def append_message(self, sender, text):
+        self.chat_display.configure(state="normal")
+        if sender == "You":
+            self.chat_display.insert("end", f"\nYou:\n{text}\n\n")
+        else:
+            self.chat_display.insert("end", f"Companion:\n{text}\n\n")
+        self.chat_display.configure(state="disabled")
+        self.chat_display.yview("end")
+
+    def send_message(self):
+        user_text = self.entry_box.get().strip()
+        if not user_text:
+            return
+            
+        self.append_message("You", user_text)
+        self.entry_box.delete(0, "end")
+        
+        threading.Thread(target=self.process_ai_response, args=(user_text,), daemon=True).start()
+
+    def check_safety(self, user_input):
+        for word in CRISIS_KEYWORDS:
+            if word in user_input.lower():
+                return False
+        return True
+
+    def process_ai_response(self, user_message):
+        global chat_history
+        
+        if not self.check_safety(user_message):
+            crisis_msg = (
+                "I hear that things are incredibly heavy right now, but I'm an AI and not equipped "
+                "to give you the support you deserve. Please reach out to someone who can help. "
+                "You can connect with compassionate humans at a crisis helpline (like 988) "
+                "at any time. Your life has immense value."
+            )
+            self.after(0, lambda: self.append_message("AI", crisis_msg))
+            self.speak_text(crisis_msg)
+            return
+            
+        chat_history.append({"role": "user", "content": user_message})
+        payload = {"model": MODEL_NAME, "messages": chat_history, "stream": False}
+        
+        try:
+            response = requests.post(OLLAMA_URL, json=payload)
+            ai_response = response.json()['message']['content']
+            chat_history.append({"role": "assistant", "content": ai_response})
+            
+            self.after(0, lambda: self.append_message("AI", ai_response))
+            self.speak_text(ai_response)
+        except Exception as e:
+            self.after(0, lambda: self.append_message("AI", f"[Connection error: {str(e)[:100]}]"))
+
+    def speak_text(self, text):
+        engine.setProperty('voice', SELECTED_VOICE)
+        engine.setProperty('rate', 155)
+        engine.say(text)
+        engine.runAndWait()
+
+    def on_closing(self):
+        print("\n[Closing session securely...]")
+        
+        if len(chat_history) > 2:
+            try:
+                current_time = datetime.datetime.now().strftime("%Y-%m-%d %I:%M %p")
+                
+                journal_entry = []
+                journal_entry.append("=" * 60)
+                journal_entry.append(f" PRIVATE SAFE SPACE JOURNAL ENTRY - {current_time}")
+                journal_entry.append("=" * 60 + "\n")
+                
+                for message in chat_history:
+                    role = message["role"]
+                    content = message["content"]
+                    
+                    if role == "user":
+                        journal_entry.append(f"[ You ]:\n{content}\n")
+                    elif role == "assistant":
+                        journal_entry.append(f"[ Companion ]:\n{content}\n")
+                
+                journal_entry.append("\n" + "_" * 60 + "\n\n")
+                
+                with open("safe_space_journal.txt", "a", encoding="utf-8") as journal_file:
+                    journal_file.write("\n".join(journal_entry))
+                    
+                print("Successfully saved to 'safe_space_journal.txt'.")
+                print("Take care of yourself until next time.\n")
+                
+            except Exception as e:
+                print(f"Could not save journal entry: {e}")
+        else:
+            print("Session was empty. No journal entry saved. Have a peaceful day!\n")
+        
+        self.destroy()
+
+if __name__ == "__main__":
+    app = SoothingChatApp()
+    app.protocol("WM_DELETE_WINDOW", app.on_closing)
+    app.mainloop()
